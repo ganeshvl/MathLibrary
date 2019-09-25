@@ -1,2 +1,2 @@
-include ':app', ':mathlibrary'
+include ':mathlibrary'
 rootProject.name='My Application'
