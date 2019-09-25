@@ -1,0 +1,2 @@
+include ':app', ':mathlibrary'
+rootProject.name='My Application'
