@@ -1,0 +1,121 @@
+import android.os.Handler
+import android.os.Looper
+import kotlinx.coroutines.*
+import org.zeromq.ZMQ
+import java.util.*
+
+class ZMQService(private val uiHandler: Handler) {
+
+    private val context = ZMQ.context(1)
+    private var subscriberSocket: ZMQ.Socket? = null
+    private var publisherSocket: ZMQ.Socket? = null
+    private var isConnected = false
+    private var retryCount = 0
+    private val maxRetries = 3
+
+    // Coroutine scope for async tasks
+    private val coroutineScope = CoroutineScope(Dispatchers.IO + SupervisorJob())
+
+    fun connect(subscribeTopic: String, publisherAddress: String, subscriberAddress: String) {
+        coroutineScope.launch {
+            try {
+                // Set up the publisher socket (send data)
+                publisherSocket = context.socket(ZMQ.PUB)
+                publisherSocket?.bind(publisherAddress)
+
+                // Set up the subscriber socket (receive data)
+                subscriberSocket = context.socket(ZMQ.SUB)
+                subscriberSocket?.connect(subscriberAddress)
+                subscriberSocket?.subscribe(subscribeTopic.toByteArray())
+
+                isConnected = true
+                retryCount = 0
+                sendUiMessage("Connected to ZMQ")
+
+                // Start listening for incoming messages
+                listenForMessages()
+            } catch (e: Exception) {
+                handleException("Connection failed: ${e.message}")
+            }
+        }
+    }
+
+    private suspend fun listenForMessages() {
+        withContext(Dispatchers.IO) {
+            while (isConnected) {
+                try {
+                    val message = subscriberSocket?.recvStr(ZMQ.NOBLOCK)
+                    if (!message.isNullOrBlank()) {
+                        sendUiMessage("Received message: $message")
+                    }
+                } catch (e: Exception) {
+                    handleException("Error receiving message: ${e.message}")
+                    break
+                }
+            }
+        }
+    }
+
+    fun sendMessage(message: String) {
+        coroutineScope.launch {
+            try {
+                publisherSocket?.send(message)
+                sendUiMessage("Message sent: $message")
+            } catch (e: Exception) {
+                handleException("Error sending message: ${e.message}")
+            }
+        }
+    }
+
+    fun sendHeartbeat() {
+        coroutineScope.launch {
+            while (isConnected) {
+                try {
+                    publisherSocket?.send("HEARTBEAT")
+                    sendUiMessage("Heartbeat sent")
+                    delay(5000) // Send heartbeat every 5 seconds
+                } catch (e: Exception) {
+                    handleException("Error sending heartbeat: ${e.message}")
+                    break
+                }
+            }
+        }
+    }
+
+    private fun handleException(error: String) {
+        if (retryCount < maxRetries) {
+            retryCount++
+            sendUiMessage("$error. Retrying... ($retryCount/$maxRetries)")
+            reconnect()
+        } else {
+            sendUiMessage("Failed to reconnect after $maxRetries retries. Please check your connection.")
+            disconnect()
+        }
+    }
+
+    private fun reconnect() {
+        disconnect()
+        coroutineScope.launch {
+            delay(3000) // Delay for 3 seconds before retrying
+            connect("topic", "tcp://*:5555", "tcp://localhost:5556") // Example addresses
+        }
+    }
+
+    fun disconnect() {
+        try {
+            isConnected = false
+            subscriberSocket?.close()
+            publisherSocket?.close()
+            sendUiMessage("Disconnected from ZMQ")
+        } catch (e: Exception) {
+            sendUiMessage("Error disconnecting: ${e.message}")
+        }
+    }
+
+    private fun sendUiMessage(message: String) {
+        uiHandler.post {
+            // Send message to the UI
+            uiHandler.obtainMessage(0, message).sendToTarget()
+        }
+    }
+}
